@@ -39,6 +39,7 @@
 
 - [راهنمای بیلد (فارسی)](docs/fa/BUILD.md) — ساخت اینستالر برای همهٔ پلتفرم‌ها  
 - [راهنمای نصب (فارسی)](docs/fa/INSTALL.md) — خروجی کجاست و چطور نصب می‌شود  
+- [نقشه راه](docs/ROADMAP.md)  
 - [Build guide (English)](docs/en/BUILD.md)  
 - [Install guide (English)](docs/en/INSTALL.md)  
 - [یادداشت اندروید](android/README.md)

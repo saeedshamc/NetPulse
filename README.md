@@ -39,6 +39,7 @@ Local traffic monitor for **this device only** — every app, every interface, e
 
 - [Build guide (English)](docs/en/BUILD.md) — produce installers for every platform  
 - [Install guide (English)](docs/en/INSTALL.md) — where outputs are and how to install them  
+- [Roadmap](docs/ROADMAP.md)  
 - [راهنمای بیلد (فارسی)](docs/fa/BUILD.md)  
 - [راهنمای نصب (فارسی)](docs/fa/INSTALL.md)  
 - [Android notes](android/README.md)
