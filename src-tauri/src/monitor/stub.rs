@@ -23,6 +23,6 @@ impl NetworkMonitor for StubMonitor {
     }
 
     fn privilege_note(&self) -> Option<String> {
-        Some("This platform build is a stub. Use Windows for the current MVP.".into())
+        Some("This platform build is a stub. Supported desktop targets are Windows, Linux, and macOS.".into())
     }
 }
