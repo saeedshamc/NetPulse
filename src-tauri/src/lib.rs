@@ -7,8 +7,8 @@ use std::sync::Arc;
 use tauri::Manager;
 
 use commands::{
-    export_usage, get_daily_history, get_hourly_history, get_latest_snapshot, init_state,
-    list_interfaces, list_ssids, start_monitor_loop,
+    export_usage, get_daily_history, get_hourly_history, get_latest_snapshot, get_monitor_status,
+    init_state, list_interfaces, list_ssids, set_monitoring_enabled, start_monitor_loop,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,7 +27,9 @@ pub fn run() {
             get_daily_history,
             export_usage,
             list_ssids,
-            list_interfaces
+            list_interfaces,
+            set_monitoring_enabled,
+            get_monitor_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

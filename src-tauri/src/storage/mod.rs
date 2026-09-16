@@ -214,6 +214,7 @@ impl Database {
         to_ms: i64,
         ssid: Option<&str>,
         interface_name: Option<&str>,
+        scope: &str,
     ) -> Result<Vec<HourlyAggregate>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut sql = String::from(
@@ -223,6 +224,11 @@ impl Database {
              LEFT JOIN application a ON a.id = h.application_id AND h.application_id != 0
              WHERE h.hour_start >= ?1 AND h.hour_start < ?2",
         );
+        // Avoid double-counting: interface rows and app rows both store the same traffic.
+        match scope {
+            "apps" => sql.push_str(" AND h.application_id != 0 AND h.interface_id = 0"),
+            _ => sql.push_str(" AND h.interface_id != 0 AND h.application_id = 0"),
+        }
         if ssid.is_some() {
             sql.push_str(" AND h.network_ssid = ?3");
         }
@@ -261,6 +267,7 @@ impl Database {
         to_ms: i64,
         ssid: Option<&str>,
         interface_name: Option<&str>,
+        scope: &str,
     ) -> Result<Vec<DailyAggregate>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut sql = String::from(
@@ -270,6 +277,10 @@ impl Database {
              LEFT JOIN application a ON a.id = d.application_id AND d.application_id != 0
              WHERE d.day_start >= ?1 AND d.day_start < ?2",
         );
+        match scope {
+            "apps" => sql.push_str(" AND d.application_id != 0 AND d.interface_id = 0"),
+            _ => sql.push_str(" AND d.interface_id != 0 AND d.application_id = 0"),
+        }
         if ssid.is_some() {
             sql.push_str(" AND d.network_ssid = ?3");
         }
@@ -307,12 +318,12 @@ impl Database {
         from_ms: i64,
         to_ms: i64,
     ) -> Result<String, String> {
-        let hourly = self.hourly_aggregates(from_ms, to_ms, None, None)?;
+        let hourly = self.hourly_aggregates(from_ms, to_ms, None, None, "interfaces")?;
         serde_json::to_string_pretty(&hourly).map_err(|e| e.to_string())
     }
 
     pub fn export_csv(&self, from_ms: i64, to_ms: i64) -> Result<String, String> {
-        let hourly = self.hourly_aggregates(from_ms, to_ms, None, None)?;
+        let hourly = self.hourly_aggregates(from_ms, to_ms, None, None, "interfaces")?;
         let mut out = String::from(
             "hour_start_ms,interface_name,application_name,network_ssid,bytes_sent,bytes_received\n",
         );
