@@ -6,39 +6,46 @@ Local per-application and per-interface network traffic monitor for your own mac
 
 ## What it does
 
-- Live per-process traffic (sent / received / rate)
-- Per-network-interface breakdown (Wi-Fi, Ethernet, VPN, hotspot, Bluetooth)
+- Live per-process / per-app traffic (sent / received / rate)
+- Per-network-interface breakdown (Wi-Fi, Ethernet, VPN, hotspot, mobile, Bluetooth)
 - Per-SSID tagging while connected to Wi-Fi
 - Hourly / daily / monthly history stored in a local SQLite database
 - CSV and JSON export
 
 NetPulse only reads what the OS reports about **this machine**. It does not scan the LAN, discover other devices, or send usage data to any server.
 
-## Requirements
+## Platforms
 
-- Windows 10/11 (current MVP target)
+| Platform | App | Traffic source |
+|---|---|---|
+| Windows | Desktop (Tauri) | IP Helper TCP/UDP tables + ESTATS, `GetIfTable` |
+| Linux | Desktop (Tauri) | `/proc/net/dev` + inet_diag (`SOCK_DIAG`) |
+| macOS | Desktop (Tauri) | `nettop` + `getifaddrs` (elevated privileges recommended) |
+| Android | Kotlin / Compose | `NetworkStatsManager` (Usage Access required) |
+| iOS | Not in this tree yet | Planned separately (Packet Tunnel Provider) |
+
+## Desktop requirements
+
 - [Rust](https://www.rust-lang.org/tools/install)
 - [Node.js](https://nodejs.org/) 18+
-- Microsoft C++ Build Tools (for Tauri on Windows)
+- Platform build tools (MSVC on Windows, Xcode on macOS, standard build-essential on Linux)
 
-Administrator rights improve completeness of per-process TCP statistics; the UI shows a notice when elevated access may help.
-
-## Develop
+## Desktop develop / build
 
 ```bash
 npm install
 npm run tauri dev
-```
-
-## Build
-
-```bash
 npm run tauri build
 ```
 
+## Android
+
+See [android/README.md](android/README.md). Open the `android/` directory in Android Studio, grant **Usage access**, then run the app.
+
 ## Data location
 
-SQLite database is stored under the OS app data directory for NetPulse (for example `%APPDATA%\com.saeedshamc.netpulse\netpulse.db` on Windows).
+- Desktop: OS app data directory for NetPulse (for example `%APPDATA%\com.saeedshamc.netpulse\netpulse.db` on Windows)
+- Android: app-private `netpulse.db`
 
 ## License
 
