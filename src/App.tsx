@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { UsageChart, type ChartPoint } from "./components/UsageChart";
+import { t, type Lang } from "./lib/i18n";
 import {
   formatBytes,
   formatRate,
@@ -12,8 +13,26 @@ import {
 
 type Tab = "apps" | "interfaces" | "history" | "export";
 type HistoryGrain = "hourly" | "daily" | "monthly";
+type HistoryScope = "interfaces" | "apps";
+
+interface MonitorStatus {
+  monitoring_enabled: boolean;
+  platform: string;
+  db_path: string;
+  app_count: number;
+  interface_count: number;
+  current_ssid: string | null;
+  last_poll_ms: number | null;
+}
+
+function loadLang(): Lang {
+  const saved = localStorage.getItem("netpulse.lang");
+  if (saved === "fa" || saved === "en") return saved;
+  return navigator.language.toLowerCase().startsWith("fa") ? "fa" : "en";
+}
 
 export default function App() {
+  const [lang, setLang] = useState<Lang>(loadLang);
   const [tab, setTab] = useState<Tab>("apps");
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -22,9 +41,19 @@ export default function App() {
   const [filterSsid, setFilterSsid] = useState("");
   const [filterIface, setFilterIface] = useState("");
   const [grain, setGrain] = useState<HistoryGrain>("daily");
+  const [scope, setScope] = useState<HistoryScope>("interfaces");
   const [chartData, setChartData] = useState<ChartPoint[]>([]);
   const [exportText, setExportText] = useState("");
   const [exportFormat, setExportFormat] = useState<"csv" | "json">("csv");
+  const [appQuery, setAppQuery] = useState("");
+  const [monitoring, setMonitoring] = useState(true);
+  const [status, setStatus] = useState<MonitorStatus | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem("netpulse.lang", lang);
+    document.documentElement.lang = lang;
+    document.documentElement.dir = lang === "fa" ? "rtl" : "ltr";
+  }, [lang]);
 
   useEffect(() => {
     let unlistenUpdate: (() => void) | undefined;
@@ -36,6 +65,13 @@ export default function App() {
         if (latest) setSnapshot(latest);
       } catch {
         // first poll may not be ready
+      }
+      try {
+        const st = await invoke<MonitorStatus>("get_monitor_status");
+        setStatus(st);
+        setMonitoring(st.monitoring_enabled);
+      } catch {
+        // ignore
       }
 
       unlistenUpdate = await listen<MonitorSnapshot>("traffic://update", (event) => {
@@ -83,18 +119,25 @@ export default function App() {
             toMs: now,
             ssid: filterSsid || null,
             interfaceName: filterIface || null,
+            scope,
           });
-          setChartData(aggregateChart(rows.map((r) => ({
-            t: r.hour_start_ms,
-            sent: r.bytes_sent,
-            received: r.bytes_received,
-          })), "hour"));
+          setChartData(
+            aggregateChart(
+              rows.map((r) => ({
+                t: r.hour_start_ms,
+                sent: r.bytes_sent,
+                received: r.bytes_received,
+              })),
+              "hour",
+            ),
+          );
         } else {
           const rows = await invoke<DailyAggregate[]>("get_daily_history", {
             fromMs: from,
             toMs: now,
             ssid: filterSsid || null,
             interfaceName: filterIface || null,
+            scope,
           });
           const points = rows.map((r) => ({
             t: r.day_start_ms,
@@ -109,16 +152,38 @@ export default function App() {
         setError(String(e));
       }
     })();
-  }, [tab, grain, filterSsid, filterIface, snapshot?.timestamp_ms]);
+  }, [tab, grain, filterSsid, filterIface, scope, snapshot?.timestamp_ms]);
 
   const apps = snapshot?.apps ?? [];
   const ifaces = snapshot?.interfaces ?? [];
+  const filteredApps = useMemo(() => {
+    const q = appQuery.trim().toLowerCase();
+    if (!q) return apps;
+    return apps.filter(
+      (a) =>
+        a.name.toLowerCase().includes(q) ||
+        (a.executable_path ?? "").toLowerCase().includes(q) ||
+        String(a.pid).includes(q),
+    );
+  }, [apps, appQuery]);
 
   const totals = useMemo(() => {
     const sent = apps.reduce((s, a) => s + a.bytes_sent_rate, 0);
     const recv = apps.reduce((s, a) => s + a.bytes_received_rate, 0);
     return { sent, recv };
   }, [apps]);
+
+  async function toggleMonitoring() {
+    const next = !monitoring;
+    try {
+      const enabled = await invoke<boolean>("set_monitoring_enabled", { enabled: next });
+      setMonitoring(enabled);
+      const st = await invoke<MonitorStatus>("get_monitor_status");
+      setStatus(st);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
 
   async function runExport() {
     const now = Date.now();
@@ -150,32 +215,49 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col">
-      <header className="flex items-end justify-between border-b border-[var(--line)] px-6 pb-4 pt-5">
+      <header className="flex items-end justify-between gap-4 border-b border-[var(--line)] px-6 pb-4 pt-5">
         <div>
-          <p className="text-xs tracking-[0.2em] text-[var(--muted)] uppercase">Local traffic</p>
+          <p className="text-xs tracking-[0.2em] text-[var(--muted)] uppercase">
+            {t(lang, "eyebrow")}
+          </p>
           <h1
             className="mt-1 text-3xl font-semibold tracking-tight text-[var(--accent)]"
             style={{ fontFamily: "var(--font-display)" }}
           >
             NetPulse
           </h1>
-          <p className="mt-1 max-w-xl text-sm text-[var(--muted)]">
-            Every byte, every app, every network — local and yours.
-          </p>
+          <p className="mt-1 max-w-xl text-sm text-[var(--muted)]">{t(lang, "tagline")}</p>
         </div>
-        <div className="text-right text-sm text-[var(--muted)]">
+        <div className="flex flex-col items-end gap-2 text-sm text-[var(--muted)]">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setLang(lang === "en" ? "fa" : "en")}
+              className="rounded border border-[var(--line)] px-2 py-1 text-xs hover:text-[var(--text)]"
+            >
+              {lang === "en" ? "فارسی" : "English"}
+            </button>
+            <button
+              onClick={toggleMonitoring}
+              className="rounded border border-[var(--line)] px-2 py-1 text-xs hover:text-[var(--text)]"
+            >
+              {monitoring ? t(lang, "pause") : t(lang, "resume")}
+            </button>
+          </div>
           <div>
-            Live:{" "}
+            {monitoring ? t(lang, "monitoringOn") : t(lang, "monitoringOff")} · {t(lang, "live")}:{" "}
             <span className="font-mono text-[var(--text)]">
               ↑ {formatRate(totals.sent)} · ↓ {formatRate(totals.recv)}
             </span>
           </div>
-          <div className="mt-1">
-            SSID:{" "}
-            <span className="text-[var(--text)]">
-              {snapshot?.current_ssid ?? "—"}
-            </span>
+          <div>
+            {t(lang, "ssid")}:{" "}
+            <span className="text-[var(--text)]">{snapshot?.current_ssid ?? "—"}</span>
           </div>
+          {status && (
+            <div className="max-w-xs truncate text-xs" title={status.db_path}>
+              {t(lang, "platform")}: {status.platform}
+            </div>
+          )}
         </div>
       </header>
 
@@ -193,12 +275,12 @@ export default function App() {
       <nav className="flex gap-1 border-b border-[var(--line)] px-4 pt-3">
         {(
           [
-            ["apps", "Apps"],
-            ["interfaces", "Interfaces"],
-            ["history", "History"],
-            ["export", "Export"],
+            ["apps", "tabApps"],
+            ["interfaces", "tabInterfaces"],
+            ["history", "tabHistory"],
+            ["export", "tabExport"],
           ] as const
-        ).map(([id, label]) => (
+        ).map(([id, key]) => (
           <button
             key={id}
             onClick={() => setTab(id)}
@@ -208,71 +290,86 @@ export default function App() {
                 : "text-[var(--muted)] hover:text-[var(--text)]"
             }`}
           >
-            {label}
+            {t(lang, key)}
           </button>
         ))}
       </nav>
 
       <main className="min-h-0 flex-1 overflow-auto bg-[var(--panel)]/60 p-4">
         {tab === "apps" && (
-          <table className="w-full border-collapse text-left text-sm">
-            <thead className="sticky top-0 bg-[var(--panel)] text-[var(--muted)]">
-              <tr>
-                <th className="px-3 py-2 font-medium">Application</th>
-                <th className="px-3 py-2 font-medium">PID</th>
-                <th className="px-3 py-2 font-medium">Sent (session)</th>
-                <th className="px-3 py-2 font-medium">Received (session)</th>
-                <th className="px-3 py-2 font-medium">↑ rate</th>
-                <th className="px-3 py-2 font-medium">↓ rate</th>
-              </tr>
-            </thead>
-            <tbody>
-              {apps.length === 0 && (
+          <div className="space-y-3">
+            <input
+              value={appQuery}
+              onChange={(e) => setAppQuery(e.target.value)}
+              placeholder={t(lang, "searchApps")}
+              className="w-full max-w-md rounded border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-sm"
+            />
+            <table className="w-full border-collapse text-left text-sm">
+              <thead className="sticky top-0 bg-[var(--panel)] text-[var(--muted)]">
                 <tr>
-                  <td colSpan={6} className="px-3 py-8 text-center text-[var(--muted)]">
-                    Waiting for traffic samples…
-                  </td>
+                  <th className="px-3 py-2 font-medium">{t(lang, "colApp")}</th>
+                  <th className="px-3 py-2 font-medium">{t(lang, "colPid")}</th>
+                  <th className="px-3 py-2 font-medium">{t(lang, "colSentSession")}</th>
+                  <th className="px-3 py-2 font-medium">{t(lang, "colRecvSession")}</th>
+                  <th className="px-3 py-2 font-medium">{t(lang, "colRateUp")}</th>
+                  <th className="px-3 py-2 font-medium">{t(lang, "colRateDown")}</th>
                 </tr>
-              )}
-              {apps.map((app) => (
-                <tr key={app.pid} className="border-t border-[var(--line)]/70 hover:bg-white/5">
-                  <td className="px-3 py-2">
-                    <div className="font-medium">{app.name}</div>
-                    {app.executable_path && (
-                      <div className="max-w-md truncate font-mono text-xs text-[var(--muted)]">
-                        {app.executable_path}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-[var(--muted)]">{app.pid}</td>
-                  <td className="px-3 py-2 font-mono">{formatBytes(app.bytes_sent)}</td>
-                  <td className="px-3 py-2 font-mono">{formatBytes(app.bytes_received)}</td>
-                  <td className="px-3 py-2 font-mono text-[var(--accent)]">
-                    {formatRate(app.bytes_sent_rate)}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-sky-300">
-                    {formatRate(app.bytes_received_rate)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filteredApps.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-8 text-center text-[var(--muted)]">
+                      {apps.length === 0 ? t(lang, "waitingApps") : t(lang, "noMatch")}
+                    </td>
+                  </tr>
+                )}
+                {filteredApps.map((app) => (
+                  <tr key={app.pid} className="border-t border-[var(--line)]/70 hover:bg-white/5">
+                    <td className="px-3 py-2">
+                      <div className="font-medium">{app.name}</div>
+                      {app.executable_path && (
+                        <div className="max-w-md truncate font-mono text-xs text-[var(--muted)]">
+                          {app.executable_path}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[var(--muted)]">{app.pid}</td>
+                    <td className="px-3 py-2 font-mono">{formatBytes(app.bytes_sent)}</td>
+                    <td className="px-3 py-2 font-mono">{formatBytes(app.bytes_received)}</td>
+                    <td className="px-3 py-2 font-mono text-[var(--accent)]">
+                      {formatRate(app.bytes_sent_rate)}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-sky-300">
+                      {formatRate(app.bytes_received_rate)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
 
         {tab === "interfaces" && (
           <table className="w-full border-collapse text-left text-sm">
             <thead className="sticky top-0 bg-[var(--panel)] text-[var(--muted)]">
               <tr>
-                <th className="px-3 py-2 font-medium">Interface</th>
-                <th className="px-3 py-2 font-medium">Type</th>
-                <th className="px-3 py-2 font-medium">SSID</th>
-                <th className="px-3 py-2 font-medium">Sent (lifetime)</th>
-                <th className="px-3 py-2 font-medium">Received (lifetime)</th>
-                <th className="px-3 py-2 font-medium">↑ rate</th>
-                <th className="px-3 py-2 font-medium">↓ rate</th>
+                <th className="px-3 py-2 font-medium">{t(lang, "colIface")}</th>
+                <th className="px-3 py-2 font-medium">{t(lang, "colType")}</th>
+                <th className="px-3 py-2 font-medium">{t(lang, "colSsid")}</th>
+                <th className="px-3 py-2 font-medium">{t(lang, "colSentLife")}</th>
+                <th className="px-3 py-2 font-medium">{t(lang, "colRecvLife")}</th>
+                <th className="px-3 py-2 font-medium">{t(lang, "colRateUp")}</th>
+                <th className="px-3 py-2 font-medium">{t(lang, "colRateDown")}</th>
               </tr>
             </thead>
             <tbody>
+              {ifaces.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-3 py-8 text-center text-[var(--muted)]">
+                    {t(lang, "waitingIfaces")}
+                  </td>
+                </tr>
+              )}
               {ifaces.map((iface) => (
                 <tr
                   key={iface.index}
@@ -305,16 +402,24 @@ export default function App() {
                 onChange={(e) => setGrain(e.target.value as HistoryGrain)}
                 className="rounded border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-sm"
               >
-                <option value="hourly">Hourly</option>
-                <option value="daily">Daily</option>
-                <option value="monthly">Monthly</option>
+                <option value="hourly">{t(lang, "hourly")}</option>
+                <option value="daily">{t(lang, "daily")}</option>
+                <option value="monthly">{t(lang, "monthly")}</option>
+              </select>
+              <select
+                value={scope}
+                onChange={(e) => setScope(e.target.value as HistoryScope)}
+                className="rounded border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-sm"
+              >
+                <option value="interfaces">{t(lang, "scopeIfaces")}</option>
+                <option value="apps">{t(lang, "scopeApps")}</option>
               </select>
               <select
                 value={filterSsid}
                 onChange={(e) => setFilterSsid(e.target.value)}
                 className="rounded border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-sm"
               >
-                <option value="">All SSIDs</option>
+                <option value="">{t(lang, "allSsids")}</option>
                 {ssids.map((s) => (
                   <option key={s} value={s}>
                     {s}
@@ -326,7 +431,7 @@ export default function App() {
                 onChange={(e) => setFilterIface(e.target.value)}
                 className="rounded border border-[var(--line)] bg-[var(--bg)] px-3 py-2 text-sm"
               >
-                <option value="">All interfaces</option>
+                <option value="">{t(lang, "allIfaces")}</option>
                 {interfaces.map((s) => (
                   <option key={s} value={s}>
                     {s}
@@ -336,19 +441,14 @@ export default function App() {
             </div>
             <UsageChart data={chartData} />
             {chartData.length === 0 && (
-              <p className="text-sm text-[var(--muted)]">
-                No history yet. Keep NetPulse running to accumulate usage.
-              </p>
+              <p className="text-sm text-[var(--muted)]">{t(lang, "noHistory")}</p>
             )}
           </div>
         )}
 
         {tab === "export" && (
           <div className="mx-auto max-w-3xl space-y-4">
-            <p className="text-sm text-[var(--muted)]">
-              Export the last 90 days of hourly aggregates. Data never leaves this machine unless
-              you save the file.
-            </p>
+            <p className="text-sm text-[var(--muted)]">{t(lang, "exportHint")}</p>
             <div className="flex flex-wrap gap-3">
               <select
                 value={exportFormat}
@@ -362,22 +462,27 @@ export default function App() {
                 onClick={runExport}
                 className="rounded bg-[var(--accent-dim)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]"
               >
-                Generate
+                {t(lang, "generate")}
               </button>
               <button
                 onClick={downloadExport}
                 disabled={!exportText}
                 className="rounded border border-[var(--line)] px-4 py-2 text-sm disabled:opacity-40"
               >
-                Download
+                {t(lang, "download")}
               </button>
             </div>
             <textarea
               readOnly
               value={exportText}
-              placeholder="Export preview appears here"
+              placeholder={t(lang, "exportPlaceholder")}
               className="h-80 w-full rounded border border-[var(--line)] bg-[var(--bg)] p-3 font-mono text-xs"
             />
+            {status && (
+              <p className="truncate text-xs text-[var(--muted)]" title={status.db_path}>
+                {t(lang, "dbPath")}: {status.db_path}
+              </p>
+            )}
           </div>
         )}
       </main>
