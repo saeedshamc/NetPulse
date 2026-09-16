@@ -149,6 +149,41 @@ class LocalDb(context: Context) :
         }
     }
 
+    data class UsageTotals(val sent: Long, val received: Long) {
+        val total: Long get() = sent + received
+    }
+
+    fun todayTotals(): UsageTotals {
+        val now = System.currentTimeMillis()
+        val dayStart = now - (now % 86_400_000L)
+        return sumDailyFrom(dayStart)
+    }
+
+    fun monthTotals(): UsageTotals {
+        val now = System.currentTimeMillis()
+        val day = java.util.Calendar.getInstance().apply { timeInMillis = now }
+        day.set(java.util.Calendar.DAY_OF_MONTH, 1)
+        day.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        day.set(java.util.Calendar.MINUTE, 0)
+        day.set(java.util.Calendar.SECOND, 0)
+        day.set(java.util.Calendar.MILLISECOND, 0)
+        return sumDailyFrom(day.timeInMillis)
+    }
+
+    private fun sumDailyFrom(startMs: Long): UsageTotals {
+        readableDatabase.rawQuery(
+            """
+            SELECT COALESCE(SUM(bytes_sent), 0), COALESCE(SUM(bytes_received), 0)
+            FROM aggregate_daily
+            WHERE day_start >= ? AND application_id = 0
+            """.trimIndent(),
+            arrayOf(startMs.toString()),
+        ).use { c ->
+            c.moveToFirst()
+            return UsageTotals(c.getLong(0), c.getLong(1))
+        }
+    }
+
     private fun upsertAggregate(
         db: SQLiteDatabase,
         table: String,

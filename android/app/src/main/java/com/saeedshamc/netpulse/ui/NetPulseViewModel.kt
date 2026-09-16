@@ -75,6 +75,7 @@ class NetPulseViewModel(app: Application) : AndroidViewModel(app) {
             val s = repo.snapshot(start, end)
             if (repo.hasUsageAccess()) {
                 db.recordSnapshot(s)
+                com.saeedshamc.netpulse.widget.TodayUsageWidget.refreshAll(getApplication())
             }
             s
         }

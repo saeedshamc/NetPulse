@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NetPulse</string>
+    <string name="widget_today_description">Today\'s local network usage</string>
+    <string name="widget_today_label">Today</string>
+    <string name="widget_month_label">This month</string>
+</resources>
