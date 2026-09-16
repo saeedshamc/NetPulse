@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::monitor::{
     create_monitor, DailyAggregate, HourlyAggregate, MonitorSnapshot, NetworkMonitor,
 };
+use crate::settings::AppSettings;
 use crate::storage::Database;
 
 pub struct AppState {
@@ -15,8 +16,11 @@ pub struct AppState {
     pub prev_app_bytes: Mutex<std::collections::HashMap<u32, (u64, u64)>>,
     pub prev_iface_bytes: Mutex<std::collections::HashMap<u32, (u64, u64)>>,
     pub monitoring_enabled: Mutex<bool>,
+    pub settings: Mutex<AppSettings>,
+    pub settings_dir: std::path::PathBuf,
     pub db_path: String,
     pub platform: String,
+    pub alert_fired_day: Mutex<Option<i64>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,6 +32,7 @@ pub struct MonitorStatus {
     pub interface_count: usize,
     pub current_ssid: Option<String>,
     pub last_poll_ms: Option<u64>,
+    pub poll_interval_secs: u64,
 }
 
 #[tauri::command]
@@ -113,6 +118,7 @@ pub fn get_monitor_status(state: State<'_, Arc<AppState>>) -> Result<MonitorStat
         .monitoring_enabled
         .lock()
         .map_err(|e| e.to_string())?;
+    let settings = state.settings.lock().map_err(|e| e.to_string())?.clone();
     let snap = state.last_snapshot.lock().map_err(|e| e.to_string())?;
     Ok(MonitorStatus {
         monitoring_enabled: enabled,
@@ -122,18 +128,79 @@ pub fn get_monitor_status(state: State<'_, Arc<AppState>>) -> Result<MonitorStat
         interface_count: snap.as_ref().map(|s| s.interfaces.len()).unwrap_or(0),
         current_ssid: snap.as_ref().and_then(|s| s.current_ssid.clone()),
         last_poll_ms: snap.as_ref().map(|s| s.timestamp_ms),
+        poll_interval_secs: settings.poll_interval_secs,
     })
+}
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, Arc<AppState>>) -> Result<AppSettings, String> {
+    Ok(state.settings.lock().map_err(|e| e.to_string())?.clone())
+}
+
+#[tauri::command]
+pub fn save_settings(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    settings: AppSettings,
+) -> Result<AppSettings, String> {
+    let cleaned = settings.sanitize();
+    cleaned.save(&state.settings_dir)?;
+    {
+        let mut guard = state.settings.lock().map_err(|e| e.to_string())?;
+        *guard = cleaned.clone();
+    }
+
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_autostart::ManagerExt;
+        let launcher = app.autolaunch();
+        if cleaned.start_with_os {
+            let _ = launcher.enable();
+        } else {
+            let _ = launcher.disable();
+        }
+    }
+
+    let _ = app.emit("settings://updated", cleaned.clone());
+    Ok(cleaned)
+}
+
+#[tauri::command]
+pub fn run_retention_now(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
+    let days = state
+        .settings
+        .lock()
+        .map_err(|e| e.to_string())?
+        .retention_days;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let cutoff = now - (i64::from(days) * 86_400_000);
+    state.db.purge_raw_older_than(cutoff)
 }
 
 pub fn start_monitor_loop(app: AppHandle, state: Arc<AppState>) {
     std::thread::spawn(move || {
         let mut monitor: Box<dyn NetworkMonitor> = create_monitor();
+        let mut last_retention = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap_or_else(std::time::Instant::now);
+
         loop {
-            let enabled = state
-                .monitoring_enabled
-                .lock()
-                .map(|g| *g)
-                .unwrap_or(true);
+            let (enabled, interval, settings_snapshot) = {
+                let enabled = state
+                    .monitoring_enabled
+                    .lock()
+                    .map(|g| *g)
+                    .unwrap_or(true);
+                let settings = state
+                    .settings
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                (enabled, settings.poll_interval_secs.max(1), settings)
+            };
 
             if enabled {
                 match monitor.poll_snapshot() {
@@ -177,6 +244,8 @@ pub fn start_monitor_loop(app: AppHandle, state: Arc<AppState>) {
                             *guard = Some(snapshot.clone());
                         }
                         let _ = app.emit("traffic://update", snapshot);
+
+                        maybe_fire_alert(&app, &state, &settings_snapshot);
                     }
                     Err(err) => {
                         let _ = app.emit("traffic://error", err);
@@ -184,15 +253,74 @@ pub fn start_monitor_loop(app: AppHandle, state: Arc<AppState>) {
                 }
             }
 
-            std::thread::sleep(Duration::from_secs(2));
+            if last_retention.elapsed() > Duration::from_secs(6 * 3600) {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let cutoff = now - (i64::from(settings_snapshot.retention_days) * 86_400_000);
+                let _ = state.db.purge_raw_older_than(cutoff);
+                last_retention = std::time::Instant::now();
+            }
+
+            std::thread::sleep(Duration::from_secs(interval));
         }
     });
+}
+
+fn maybe_fire_alert(app: &AppHandle, state: &AppState, settings: &AppSettings) {
+    if !settings.alert_enabled {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let day_start = now - (now % 86_400_000);
+    {
+        let fired = state.alert_fired_day.lock().ok();
+        if let Some(guard) = fired {
+            if guard.as_ref() == Some(&day_start) {
+                return;
+            }
+        }
+    }
+
+    let Ok(total) = state
+        .db
+        .today_interface_bytes(settings.alert_ssid_only.as_deref())
+    else {
+        return;
+    };
+    if total < settings.alert_daily_bytes {
+        return;
+    }
+
+    if let Ok(mut guard) = state.alert_fired_day.lock() {
+        *guard = Some(day_start);
+    }
+
+    let gb = total as f64 / (1024.0 * 1024.0 * 1024.0);
+    let msg = format!("Daily usage reached {gb:.2} GB");
+    let _ = app.emit("alerts://usage", msg.clone());
+
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = app
+            .notification()
+            .builder()
+            .title("NetPulse")
+            .body(&msg)
+            .show();
+    }
 }
 
 pub fn init_state(app: &AppHandle) -> Result<Arc<AppState>, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let db_path = dir.join("netpulse.db");
     let db_path_str = db_path.to_string_lossy().to_string();
+    let settings = AppSettings::load(&dir).sanitize();
     let db = Arc::new(Database::open(&db_path)?);
     Ok(Arc::new(AppState {
         db,
@@ -200,7 +328,10 @@ pub fn init_state(app: &AppHandle) -> Result<Arc<AppState>, String> {
         prev_app_bytes: Mutex::new(Default::default()),
         prev_iface_bytes: Mutex::new(Default::default()),
         monitoring_enabled: Mutex::new(true),
+        settings: Mutex::new(settings),
+        settings_dir: dir,
         db_path: db_path_str,
         platform: std::env::consts::OS.to_string(),
+        alert_fired_day: Mutex::new(None),
     }))
 }

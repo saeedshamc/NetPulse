@@ -6,6 +6,10 @@
   "permissions": [
     "core:default",
     "core:event:default",
-    "opener:default"
+    "opener:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
+    "notification:default"
   ]
 }

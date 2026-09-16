@@ -366,6 +366,49 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
     }
+
+    /// Delete raw traffic records older than cutoff; keep aggregates for charts.
+    pub fn purge_raw_older_than(&self, cutoff_ms: i64) -> Result<u64, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "DELETE FROM traffic_record WHERE timestamp < ?1",
+                params![cutoff_ms],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n as u64)
+    }
+
+    /// Sum interface-scoped daily usage for today (or optional SSID filter).
+    pub fn today_interface_bytes(&self, ssid: Option<&str>) -> Result<u64, String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let day_start = now - (now % 86_400_000);
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let total: i64 = if let Some(s) = ssid {
+            conn.query_row(
+                "SELECT COALESCE(SUM(bytes_sent + bytes_received), 0)
+                 FROM aggregate_daily
+                 WHERE day_start = ?1 AND interface_id != 0 AND application_id = 0
+                   AND network_ssid = ?2",
+                params![day_start, s],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?
+        } else {
+            conn.query_row(
+                "SELECT COALESCE(SUM(bytes_sent + bytes_received), 0)
+                 FROM aggregate_daily
+                 WHERE day_start = ?1 AND interface_id != 0 AND application_id = 0",
+                params![day_start],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?
+        };
+        Ok(total as u64)
+    }
 }
 
 fn map_hourly(r: &rusqlite::Row<'_>) -> rusqlite::Result<HourlyAggregate> {
