@@ -1,34 +1,49 @@
 # NetPulse Android
 
-Standalone Kotlin + Jetpack Compose app using `NetworkStatsManager` for this device only.
+**English** · [فارسی](#فارسی)
+
+Standalone Kotlin + Jetpack Compose app using `NetworkStatsManager` (this device only).
 
 ## Features
 
-- Per-app usage (requires Usage Access)
-- Per-interface totals (Wi-Fi / mobile)
-- Current SSID tagging for Wi-Fi
-- Hourly / daily history views
-- CSV / JSON export
-- Local SQLite with the same conceptual schema as the desktop app
+- Per-app usage (requires **Usage access**)
+- Per-interface totals (Wi-Fi / mobile) + current SSID
+- Hourly / daily history, CSV / JSON export
+- Local SQLite matching the desktop data model
 
-## Requirements
+## Build release packages
 
-- Android Studio Ladybug+ / AGP 8.7
-- Android 8.0 (API 26)+
-- User must manually grant **Usage access** in system settings (`PACKAGE_USAGE_STATS`)
+Preferred (from repo root, after Gradle Wrapper exists):
 
-## Build
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-android.ps1
+```
 
 ```bash
-cd android
-./gradlew :app:assembleDebug
+chmod +x scripts/build-android.sh && ./scripts/build-android.sh
 ```
 
-On Windows:
+Or open `android/` in Android Studio → **Build > Generate Signed Bundle / APK**.
 
-```bat
-cd android
-gradlew.bat :app:assembleDebug
+Outputs:
+
+- `app/build/outputs/apk/release/*.apk` — direct install
+- `app/build/outputs/bundle/release/*.aab` — Play Store
+
+The APK/AAB is self-contained. Users do not install Node/Rust. They only grant the system **Usage access** permission.
+
+---
+
+## فارسی
+
+اپ اندروید جدا با Compose و `NetworkStatsManager` — فقط ترافیک همین گوشی.
+
+### ساخت پکیج انتشار
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-android.ps1
 ```
 
-Open the `android/` folder in Android Studio for the simplest workflow.
+یا Android Studio → Generate Signed Bundle / APK.
+
+خروجی APK برای نصب مستقیم و AAB برای پلی‌استور است؛ خودکفاست و کاربر به Node/Rust نیاز ندارد. فقط مجوز **Usage access** سیستم را بدهد.
