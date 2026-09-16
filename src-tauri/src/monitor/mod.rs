@@ -1,10 +1,16 @@
 mod types;
 
-#[cfg(not(windows))]
-mod stub;
-
 #[cfg(windows)]
 mod windows_impl;
+
+#[cfg(target_os = "linux")]
+mod linux_impl;
+
+#[cfg(target_os = "macos")]
+mod macos_impl;
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+mod stub;
 
 pub use types::*;
 
@@ -39,7 +45,15 @@ pub fn create_monitor() -> Box<dyn NetworkMonitor> {
     {
         Box::new(windows_impl::WindowsMonitor::new())
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(linux_impl::LinuxMonitor::new())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Box::new(macos_impl::MacMonitor::new())
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         Box::new(stub::StubMonitor::new())
     }
