@@ -11,7 +11,7 @@ import {
   type MonitorSnapshot,
 } from "./lib/types";
 
-type Tab = "apps" | "interfaces" | "history" | "export";
+type Tab = "apps" | "interfaces" | "history" | "export" | "settings";
 type HistoryGrain = "hourly" | "daily" | "monthly";
 type HistoryScope = "interfaces" | "apps";
 
@@ -23,7 +23,32 @@ interface MonitorStatus {
   interface_count: number;
   current_ssid: string | null;
   last_poll_ms: number | null;
+  poll_interval_secs: number;
 }
+
+interface AppSettings {
+  poll_interval_secs: number;
+  theme: string;
+  language: string;
+  start_with_os: boolean;
+  close_to_tray: boolean;
+  retention_days: number;
+  alert_enabled: boolean;
+  alert_daily_bytes: number;
+  alert_ssid_only: string | null;
+}
+
+const defaultSettings = (): AppSettings => ({
+  poll_interval_secs: 2,
+  theme: "dark",
+  language: "en",
+  start_with_os: false,
+  close_to_tray: true,
+  retention_days: 90,
+  alert_enabled: false,
+  alert_daily_bytes: 5_368_709_120,
+  alert_ssid_only: null,
+});
 
 function loadLang(): Lang {
   const saved = localStorage.getItem("netpulse.lang");
@@ -31,11 +56,16 @@ function loadLang(): Lang {
   return navigator.language.toLowerCase().startsWith("fa") ? "fa" : "en";
 }
 
+function applyTheme(theme: string) {
+  document.documentElement.setAttribute("data-theme", theme === "light" ? "light" : "dark");
+}
+
 export default function App() {
   const [lang, setLang] = useState<Lang>(loadLang);
   const [tab, setTab] = useState<Tab>("apps");
   const [snapshot, setSnapshot] = useState<MonitorSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [ssids, setSsids] = useState<string[]>([]);
   const [interfaces, setInterfaces] = useState<string[]>([]);
   const [filterSsid, setFilterSsid] = useState("");
@@ -48,6 +78,8 @@ export default function App() {
   const [appQuery, setAppQuery] = useState("");
   const [monitoring, setMonitoring] = useState(true);
   const [status, setStatus] = useState<MonitorStatus | null>(null);
+  const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [alertGb, setAlertGb] = useState("5");
 
   useEffect(() => {
     localStorage.setItem("netpulse.lang", lang);
@@ -56,8 +88,14 @@ export default function App() {
   }, [lang]);
 
   useEffect(() => {
+    applyTheme(settings.theme);
+  }, [settings.theme]);
+
+  useEffect(() => {
     let unlistenUpdate: (() => void) | undefined;
     let unlistenError: (() => void) | undefined;
+    let unlistenAlert: (() => void) | undefined;
+    let unlistenSettings: (() => void) | undefined;
 
     (async () => {
       try {
@@ -73,6 +111,15 @@ export default function App() {
       } catch {
         // ignore
       }
+      try {
+        const s = await invoke<AppSettings>("get_settings");
+        setSettings(s);
+        setAlertGb((s.alert_daily_bytes / (1024 * 1024 * 1024)).toFixed(2));
+        if (s.language === "fa" || s.language === "en") setLang(s.language);
+        applyTheme(s.theme);
+      } catch {
+        // ignore
+      }
 
       unlistenUpdate = await listen<MonitorSnapshot>("traffic://update", (event) => {
         setSnapshot(event.payload);
@@ -81,16 +128,25 @@ export default function App() {
       unlistenError = await listen<string>("traffic://error", (event) => {
         setError(event.payload);
       });
+      unlistenAlert = await listen<string>("alerts://usage", (event) => {
+        setNotice(`${t(lang, "alertFired")}: ${event.payload}`);
+      });
+      unlistenSettings = await listen<AppSettings>("settings://updated", (event) => {
+        setSettings(event.payload);
+        applyTheme(event.payload.theme);
+      });
     })();
 
     return () => {
       unlistenUpdate?.();
       unlistenError?.();
+      unlistenAlert?.();
+      unlistenSettings?.();
     };
   }, []);
 
   useEffect(() => {
-    if (tab !== "history" && tab !== "export") return;
+    if (tab !== "history" && tab !== "export" && tab !== "settings") return;
     (async () => {
       try {
         setSsids(await invoke<string[]>("list_ssids"));
@@ -213,6 +269,36 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
+  async function persistSettings(next: AppSettings) {
+    try {
+      const gb = Number.parseFloat(alertGb);
+      const bytes = Number.isFinite(gb) && gb > 0 ? Math.round(gb * 1024 * 1024 * 1024) : next.alert_daily_bytes;
+      const payload: AppSettings = {
+        ...next,
+        language: lang,
+        alert_daily_bytes: bytes,
+        alert_ssid_only: next.alert_ssid_only || null,
+      };
+      const saved = await invoke<AppSettings>("save_settings", { settings: payload });
+      setSettings(saved);
+      setAlertGb((saved.alert_daily_bytes / (1024 * 1024 * 1024)).toFixed(2));
+      applyTheme(saved.theme);
+      setNotice(t(lang, "settingsSaved"));
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function pruneNow() {
+    try {
+      const removed = await invoke<number>("run_retention_now");
+      setNotice(`${t(lang, "retentionDone")}: ${removed}`);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   return (
     <div className="flex h-screen flex-col">
       <header className="flex items-end justify-between gap-4 border-b border-[var(--line)] px-6 pb-4 pt-5">
@@ -231,7 +317,11 @@ export default function App() {
         <div className="flex flex-col items-end gap-2 text-sm text-[var(--muted)]">
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setLang(lang === "en" ? "fa" : "en")}
+              onClick={() => {
+                const next = lang === "en" ? "fa" : "en";
+                setLang(next);
+                setSettings((s) => ({ ...s, language: next }));
+              }}
               className="rounded border border-[var(--line)] px-2 py-1 text-xs hover:text-[var(--text)]"
             >
               {lang === "en" ? "فارسی" : "English"}
@@ -262,13 +352,21 @@ export default function App() {
       </header>
 
       {snapshot?.privilege_note && (
-        <div className="border-b border-[var(--line)] bg-[#2a2414] px-6 py-2 text-sm text-[var(--warn)]">
+        <div className="border-b border-[var(--line)] bg-[var(--warn-bg)] px-6 py-2 text-sm text-[var(--warn)]">
           {snapshot.privilege_note}
         </div>
       )}
       {error && (
-        <div className="border-b border-[var(--line)] bg-[#2a1414] px-6 py-2 text-sm text-red-300">
+        <div className="border-b border-[var(--line)] bg-[var(--danger-bg)] px-6 py-2 text-sm text-red-400">
           {error}
+        </div>
+      )}
+      {notice && !error && (
+        <div className="border-b border-[var(--line)] bg-[var(--warn-bg)] px-6 py-2 text-sm text-[var(--accent)]">
+          {notice}
+          <button className="ms-3 text-xs underline" onClick={() => setNotice(null)}>
+            ×
+          </button>
         </div>
       )}
 
@@ -279,6 +377,7 @@ export default function App() {
             ["interfaces", "tabInterfaces"],
             ["history", "tabHistory"],
             ["export", "tabExport"],
+            ["settings", "tabSettings"],
           ] as const
         ).map(([id, key]) => (
           <button
@@ -324,7 +423,7 @@ export default function App() {
                   </tr>
                 )}
                 {filteredApps.map((app) => (
-                  <tr key={app.pid} className="border-t border-[var(--line)]/70 hover:bg-white/5">
+                  <tr key={app.pid} className="border-t border-[var(--line)]/70 hover:bg-black/5">
                     <td className="px-3 py-2">
                       <div className="font-medium">{app.name}</div>
                       {app.executable_path && (
@@ -339,7 +438,7 @@ export default function App() {
                     <td className="px-3 py-2 font-mono text-[var(--accent)]">
                       {formatRate(app.bytes_sent_rate)}
                     </td>
-                    <td className="px-3 py-2 font-mono text-sky-300">
+                    <td className="px-3 py-2 font-mono text-sky-500">
                       {formatRate(app.bytes_received_rate)}
                     </td>
                   </tr>
@@ -373,7 +472,7 @@ export default function App() {
               {ifaces.map((iface) => (
                 <tr
                   key={iface.index}
-                  className="border-t border-[var(--line)]/70 hover:bg-white/5"
+                  className="border-t border-[var(--line)]/70 hover:bg-black/5"
                 >
                   <td className="px-3 py-2 font-medium">{iface.name}</td>
                   <td className="px-3 py-2 capitalize text-[var(--muted)]">
@@ -385,7 +484,7 @@ export default function App() {
                   <td className="px-3 py-2 font-mono text-[var(--accent)]">
                     {formatRate(iface.bytes_sent_rate)}
                   </td>
-                  <td className="px-3 py-2 font-mono text-sky-300">
+                  <td className="px-3 py-2 font-mono text-sky-500">
                     {formatRate(iface.bytes_received_rate)}
                   </td>
                 </tr>
@@ -483,6 +582,138 @@ export default function App() {
                 {t(lang, "dbPath")}: {status.db_path}
               </p>
             )}
+          </div>
+        )}
+
+        {tab === "settings" && (
+          <div className="mx-auto grid max-w-3xl gap-6">
+            <section className="space-y-3">
+              <h2 className="text-lg font-semibold text-[var(--accent)]">{t(lang, "settingsGeneral")}</h2>
+              <label className="block text-sm">
+                <span className="text-[var(--muted)]">{t(lang, "pollInterval")}</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  value={settings.poll_interval_secs}
+                  onChange={(e) =>
+                    setSettings((s) => ({
+                      ...s,
+                      poll_interval_secs: Number(e.target.value) || 1,
+                    }))
+                  }
+                  className="mt-1 w-full rounded border border-[var(--line)] bg-[var(--bg)] px-3 py-2"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-[var(--muted)]">{t(lang, "theme")}</span>
+                <select
+                  value={settings.theme}
+                  onChange={(e) => setSettings((s) => ({ ...s, theme: e.target.value }))}
+                  className="mt-1 w-full rounded border border-[var(--line)] bg-[var(--bg)] px-3 py-2"
+                >
+                  <option value="dark">{t(lang, "themeDark")}</option>
+                  <option value="light">{t(lang, "themeLight")}</option>
+                </select>
+              </label>
+            </section>
+
+            <section className="space-y-3">
+              <h2 className="text-lg font-semibold text-[var(--accent)]">{t(lang, "settingsTray")}</h2>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={settings.start_with_os}
+                  onChange={(e) => setSettings((s) => ({ ...s, start_with_os: e.target.checked }))}
+                />
+                {t(lang, "startWithOs")}
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={settings.close_to_tray}
+                  onChange={(e) => setSettings((s) => ({ ...s, close_to_tray: e.target.checked }))}
+                />
+                {t(lang, "closeToTray")}
+              </label>
+            </section>
+
+            <section className="space-y-3">
+              <h2 className="text-lg font-semibold text-[var(--accent)]">{t(lang, "settingsRetention")}</h2>
+              <p className="text-sm text-[var(--muted)]">{t(lang, "retentionHint")}</p>
+              <label className="block text-sm">
+                <span className="text-[var(--muted)]">{t(lang, "retentionDays")}</span>
+                <input
+                  type="number"
+                  min={7}
+                  max={3650}
+                  value={settings.retention_days}
+                  onChange={(e) =>
+                    setSettings((s) => ({
+                      ...s,
+                      retention_days: Number(e.target.value) || 7,
+                    }))
+                  }
+                  className="mt-1 w-full rounded border border-[var(--line)] bg-[var(--bg)] px-3 py-2"
+                />
+              </label>
+              <button
+                onClick={pruneNow}
+                className="rounded border border-[var(--line)] px-4 py-2 text-sm hover:text-[var(--text)]"
+              >
+                {t(lang, "runRetention")}
+              </button>
+            </section>
+
+            <section className="space-y-3">
+              <h2 className="text-lg font-semibold text-[var(--accent)]">{t(lang, "settingsAlerts")}</h2>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={settings.alert_enabled}
+                  onChange={(e) => setSettings((s) => ({ ...s, alert_enabled: e.target.checked }))}
+                />
+                {t(lang, "alertEnabled")}
+              </label>
+              <label className="block text-sm">
+                <span className="text-[var(--muted)]">{t(lang, "alertLimitGb")}</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  step={0.1}
+                  value={alertGb}
+                  onChange={(e) => setAlertGb(e.target.value)}
+                  className="mt-1 w-full rounded border border-[var(--line)] bg-[var(--bg)] px-3 py-2"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-[var(--muted)]">{t(lang, "alertSsidOnly")}</span>
+                <select
+                  value={settings.alert_ssid_only ?? ""}
+                  onChange={(e) =>
+                    setSettings((s) => ({
+                      ...s,
+                      alert_ssid_only: e.target.value || null,
+                    }))
+                  }
+                  className="mt-1 w-full rounded border border-[var(--line)] bg-[var(--bg)] px-3 py-2"
+                >
+                  <option value="">{t(lang, "alertAnySsid")}</option>
+                  {ssids.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </section>
+
+            <button
+              onClick={() => persistSettings(settings)}
+              className="rounded bg-[var(--accent-dim)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]"
+            >
+              {t(lang, "saveSettings")}
+            </button>
           </div>
         )}
       </main>

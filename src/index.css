@@ -1,7 +1,8 @@
 @import "tailwindcss";
 
-:root {
-  color-scheme: light;
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #0f1714;
   --panel: #16221c;
   --line: #24352c;
@@ -10,9 +11,29 @@
   --accent: #3ecf8e;
   --accent-dim: #1f8f5f;
   --warn: #e0b44e;
+  --danger-bg: #2a1414;
+  --warn-bg: #2a2414;
   --font-display: "Segoe UI Semibold", "Segoe UI", system-ui, sans-serif;
   --font-body: "Segoe UI", system-ui, sans-serif;
   --font-mono: "Cascadia Mono", "Consolas", monospace;
+  --bg-glow-a: #1d3a2c;
+  --bg-glow-b: #1a2a38;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f3f7f4;
+  --panel: #ffffff;
+  --line: #d5e0d9;
+  --text: #15241c;
+  --muted: #5f7368;
+  --accent: #1f8f5f;
+  --accent-dim: #18724b;
+  --warn: #9a6b10;
+  --danger-bg: #fde8e8;
+  --warn-bg: #fff4d6;
+  --bg-glow-a: #d7ebe0;
+  --bg-glow-b: #d6e4f0;
 }
 
 * {
@@ -25,8 +46,8 @@ body,
   margin: 0;
   min-height: 100%;
   background:
-    radial-gradient(1200px 600px at 10% -10%, #1d3a2c 0%, transparent 55%),
-    radial-gradient(900px 500px at 100% 0%, #1a2a38 0%, transparent 50%),
+    radial-gradient(1200px 600px at 10% -10%, var(--bg-glow-a) 0%, transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, var(--bg-glow-b) 0%, transparent 50%),
     var(--bg);
   color: var(--text);
   font-family: var(--font-body);
